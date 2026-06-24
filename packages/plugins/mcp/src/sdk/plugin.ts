@@ -9,9 +9,12 @@ import {
   authToolFailure,
   AuthTemplateSlug,
   ConnectionName,
+  CredentialProviderNotRegisteredError,
   definePlugin,
   IntegrationAlreadyExistsError,
+  IntegrationNotFoundError,
   IntegrationSlug,
+  InvalidConnectionInputError,
   mergeAuthTemplates,
   OAuthClientSlug,
   tool,
@@ -65,6 +68,8 @@ import {
 } from "./types";
 
 const MCP_PLUGIN_ID = "mcp" as const;
+const DEFAULT_STDIO_CONNECTION_NAME = ConnectionName.make("default");
+const NO_AUTH_TEMPLATE = AuthTemplateSlug.make("none");
 
 const legacyOAuthClientSlugCandidate = (value: string): string | null => {
   const slug = value
@@ -825,9 +830,11 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
             return yield* new IntegrationAlreadyExistsError({ slug: slugFrom(slug) });
           }
 
+          const integration = slugFrom(slug);
+
           yield* ctx.core.integrations
             .register({
-              slug: slugFrom(slug),
+              slug: integration,
               name: input.name,
               description: input.description?.trim() || input.name,
               config,
@@ -842,14 +849,11 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
 
           // Auto-create the stdio server's default connection so its tools are
           // discovered immediately (without it the integration lands with zero
-          // connections and therefore zero tools — the fresh-install "no tools
-          // detected" report). Two cases connect on add:
-          //   • one-shot `env` VALUES were supplied (agent path) → bind them as
-          //     the connection's secrets.
-          //   • the server needs NO secret env at all → a no-auth connection.
-          // When the server only DECLARES env var names (the UI path), the
-          // secrets are still missing, so we leave the connection to the connect
-          // step where the user enters one masked value per declared var.
+          // connections and therefore zero tools). If one-shot `env` values were
+          // supplied, bind them as the connection's secrets. If the server only
+          // declares env var names, the secrets are still missing, so leave the
+          // connection to the connect step where the user enters one masked value
+          // per declared var.
           if (input.transport === "stdio") {
             const hasValues = input.env != null && Object.keys(input.env).length > 0;
             const declaresSecrets = stdioEnvVarNames(input).length > 0;
@@ -857,15 +861,15 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
               yield* ctx.connections
                 .create({
                   owner: "org",
-                  name: ConnectionName.make("default"),
-                  integration: slugFrom(slug),
-                  template: AuthTemplateSlug.make(hasValues ? STDIO_ENV_TEMPLATE : "none"),
+                  name: DEFAULT_STDIO_CONNECTION_NAME,
+                  integration,
+                  template: hasValues ? AuthTemplateSlug.make(STDIO_ENV_TEMPLATE) : NO_AUTH_TEMPLATE,
                   values: hasValues ? { ...input.env } : {},
                 })
                 .pipe(
                   // These can't arise right after a successful register with
                   // valid inputs, but the channel must stay within
-                  // McpExtensionFailure; surface them as a connection error
+                  // McpExtensionFailure. Surface them as a connection error
                   // rather than swallow a real failure.
                   Effect.catchTags({
                     IntegrationNotFoundError: (cause) =>
@@ -881,12 +885,13 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
                         new McpConnectionError({ transport: "stdio", message: cause.message }),
                       ),
                   }),
-                  Effect.withSpan("mcp.plugin.bootstrap_stdio_connection", {
+                  Effect.withSpan("mcp.plugin.create_stdio_default_connection", {
                     attributes: { "mcp.integration.slug": slug },
                   }),
                 );
             }
           }
+
           return { slug };
         }).pipe(
           Effect.withSpan("mcp.plugin.add_server", {
