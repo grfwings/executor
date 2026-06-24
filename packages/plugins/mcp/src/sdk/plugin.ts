@@ -19,6 +19,7 @@ import {
   OAuthClientSlug,
   tool,
   ToolResult,
+  UniqueViolationError,
   type AuthMethodDescriptor,
   type Integration,
   type IntegrationConfig,
@@ -863,7 +864,9 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
                   owner: "org",
                   name: DEFAULT_STDIO_CONNECTION_NAME,
                   integration,
-                  template: hasValues ? AuthTemplateSlug.make(STDIO_ENV_TEMPLATE) : NO_AUTH_TEMPLATE,
+                  template: hasValues
+                    ? AuthTemplateSlug.make(STDIO_ENV_TEMPLATE)
+                    : NO_AUTH_TEMPLATE,
                   values: hasValues ? { ...input.env } : {},
                 })
                 .pipe(
@@ -883,6 +886,13 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
                     InvalidConnectionInputError: (cause) =>
                       Effect.fail(
                         new McpConnectionError({ transport: "stdio", message: cause.message }),
+                      ),
+                    UniqueViolationError: () =>
+                      Effect.fail(
+                        new McpConnectionError({
+                          transport: "stdio",
+                          message: `Failed creating the default stdio MCP connection: a default connection already exists for ${slug}. Refresh the connection or remove and re-add the MCP server.`,
+                        }),
                       ),
                   }),
                   Effect.withSpan("mcp.plugin.create_stdio_default_connection", {
@@ -1406,7 +1416,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           tool({
             name: "addServer",
             description:
-              "Register an MCP server in the catalog as an integration. Returns its `slug`. Then create a connection against it: for header/API-key auth call `connections.create` with the value; for OAuth-protected servers run `oauth.probe` + `oauth.start`. Tools are produced per-connection at connection create / refresh.",
+              "Register an MCP server in the catalog as an integration. Returns its `slug`. Stdio servers are connected automatically as `org/default` with template `none`. For remote header/API-key auth, call `connections.create` with the value; for OAuth-protected remote servers, run `oauth.probe` + `oauth.start`. Tools are produced per-connection at connection create / refresh.",
             annotations: {
               requiresApproval: true,
               approvalDescription: "Add an MCP server",
